@@ -50,9 +50,17 @@ You can also type part of the Bluetooth device name before scanning. The saved
 target and last-seen time are stored in `.find_my_buds.json` in your home
 folder. No scan data is sent over the internet.
 
+## Live Bluetooth test
+
+A manual scan successfully detected `Prime701ANC_BLE` among 13 nearby BLE
+devices. The `-58 dBm` signal was classified as **Nearby**, and a second scan
+reported that the signal was getting warmer.
+
+![Find My Buds detecting nearby earbuds](docs/find-my-buds-test.png)
+
 ## Run tests
 
-The unit tests do not require Bluetooth hardware:
+
 
 ```powershell
 python -m unittest discover -s tests -v
