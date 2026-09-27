@@ -68,6 +68,22 @@ def reading_matches(
     return bool(wanted_name and wanted_name in reading.name.casefold())
 
 
+def find_target(
+    readings: list[DeviceReading],
+    target_name: str = "",
+    target_address: str = "",
+) -> DeviceReading | None:
+    """Return the first reading that matches the saved target, or None."""
+    return next(
+        (
+            r
+            for r in readings
+            if reading_matches(r, target_name=target_name, target_address=target_address)
+        ),
+        None,
+    )
+
+
 async def discover_devices(
     scanner_type: Any = None,
     timeout: float = 5.0,

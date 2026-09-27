@@ -7,6 +7,7 @@ import json
 import queue
 import threading
 import tkinter as tk
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -16,13 +17,27 @@ from finder_core import (
     DeviceReading,
     describe_trend,
     discover_devices,
-    reading_matches,
+    find_target,
     signal_percent,
 )
 
 APP_TITLE = "Find My Buds"
 CONFIG_PATH = Path.home() / ".find_my_buds.json"
-SCAN_SECONDS = 5.0
+RSSI_HISTORY_LEN = 5
+
+TIMEOUT_OPTIONS: list[tuple[str, float]] = [
+    ("3 s", 3.0),
+    ("5 s", 5.0),
+    ("8 s", 8.0),
+    ("10 s", 10.0),
+]
+
+RESCAN_OPTIONS: list[tuple[str, int]] = [
+    ("15 s", 15),
+    ("30 s", 30),
+    ("1 min", 60),
+    ("2 min", 120),
+]
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict[str, Any]:
@@ -44,8 +59,8 @@ class FindMyBudsApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("820x650")
-        self.root.minsize(720, 560)
+        self.root.geometry("820x710")
+        self.root.minsize(720, 600)
 
         self.config = load_config()
         self.target_address = str(self.config.get("target_address", ""))
@@ -54,6 +69,12 @@ class FindMyBudsApp:
         self.devices_by_item: dict[str, DeviceReading] = {}
         self.result_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.scan_in_progress = False
+        self._rescan_after_id: str | None = None
+        self._rssi_history: dict[str, deque[int]] = {}
+
+        saved_timeout_label = self.config.get("scan_timeout_label", "5 s")
+        saved_interval_label = self.config.get("rescan_interval_label", "30 s")
+        saved_auto_rescan = bool(self.config.get("auto_rescan", False))
 
         self.target_name = tk.StringVar(value=self.saved_target_name)
         self.status_text = tk.StringVar(value="Ready to scan for nearby Bluetooth devices.")
@@ -61,17 +82,52 @@ class FindMyBudsApp:
         self.signal_text = tk.StringVar(value="Signal: —")
         self.proximity_text = tk.StringVar(value="Proximity: —")
         self.trend_text = tk.StringVar(value="Select your earbuds from a scan to begin.")
+        self.history_text = tk.StringVar(value="")
         last_seen = str(self.config.get("last_seen", "Never"))
         self.last_seen_text = tk.StringVar(value=f"Last seen: {last_seen}")
+
+        self.scan_timeout_var = tk.StringVar(value=saved_timeout_label)
+        self.rescan_interval_var = tk.StringVar(value=saved_interval_label)
+        self.auto_rescan_var = tk.BooleanVar(value=saved_auto_rescan)
 
         self._build_ui()
         self.root.after(150, self._process_results)
 
+    # ── Settings helpers ──────────────────────────────────────────────────────
+
+    def _get_scan_timeout(self) -> float:
+        label = self.scan_timeout_var.get()
+        for lbl, val in TIMEOUT_OPTIONS:
+            if lbl == label:
+                return val
+        return 5.0
+
+    def _get_rescan_interval_ms(self) -> int:
+        label = self.rescan_interval_var.get()
+        for lbl, val in RESCAN_OPTIONS:
+            if lbl == label:
+                return val * 1000
+        return 30_000
+
+    def _on_settings_change(self, *_args: object) -> None:
+        """Persist scan settings and cancel rescan if auto-rescan was disabled."""
+        self.config["scan_timeout_label"] = self.scan_timeout_var.get()
+        self.config["rescan_interval_label"] = self.rescan_interval_var.get()
+        self.config["auto_rescan"] = self.auto_rescan_var.get()
+        self._save_config_safely()
+
+        if not self.auto_rescan_var.get() and self._rescan_after_id is not None:
+            self.root.after_cancel(self._rescan_after_id)
+            self._rescan_after_id = None
+            self.status_text.set("Auto-rescan disabled.")
+
+    # ── UI ────────────────────────────────────────────────────────────────────
+
     def _build_ui(self) -> None:
         style = ttk.Style(self.root)
         style.configure("Title.TLabel", font=("Segoe UI", 22, "bold"))
-        style.configure("Heading.TLabel", font=("Segoe UI", 12, "bold"))
         style.configure("Result.TLabel", font=("Segoe UI", 16, "bold"))
+        style.configure("History.TLabel", foreground="#888888")
 
         main = ttk.Frame(self.root, padding=20)
         main.grid(row=0, column=0, sticky="nsew")
@@ -88,6 +144,7 @@ class FindMyBudsApp:
             text="Use Bluetooth signal strength to search for nearby earbuds.",
         ).grid(row=1, column=0, sticky="w", pady=(0, 16))
 
+        # ── earbuds target + settings ─────────────────────────────────────────
         target_frame = ttk.LabelFrame(main, text="Your earbuds", padding=12)
         target_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         target_frame.columnconfigure(1, weight=1)
@@ -111,6 +168,40 @@ class FindMyBudsApp:
         )
         self.use_button.grid(row=0, column=3)
 
+        # Settings row — scan duration + auto-rescan
+        settings = ttk.Frame(target_frame)
+        settings.grid(row=1, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
+        ttk.Label(settings, text="Scan duration:").pack(side="left")
+        timeout_cb = ttk.Combobox(
+            settings,
+            textvariable=self.scan_timeout_var,
+            values=[lbl for lbl, _ in TIMEOUT_OPTIONS],
+            width=6,
+            state="readonly",
+        )
+        timeout_cb.pack(side="left", padx=(4, 24))
+        self.scan_timeout_var.trace_add("write", self._on_settings_change)
+
+        ttk.Label(settings, text="Auto-rescan every:").pack(side="left")
+        interval_cb = ttk.Combobox(
+            settings,
+            textvariable=self.rescan_interval_var,
+            values=[lbl for lbl, _ in RESCAN_OPTIONS],
+            width=7,
+            state="readonly",
+        )
+        interval_cb.pack(side="left", padx=(4, 8))
+        self.rescan_interval_var.trace_add("write", self._on_settings_change)
+
+        ttk.Checkbutton(
+            settings,
+            text="Enabled",
+            variable=self.auto_rescan_var,
+            command=self._on_settings_change,
+        ).pack(side="left")
+
+        # ── finder panel ──────────────────────────────────────────────────────
         result_frame = ttk.LabelFrame(main, text="Finder", padding=14)
         result_frame.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         result_frame.columnconfigure(0, weight=1)
@@ -131,13 +222,18 @@ class FindMyBudsApp:
         details.columnconfigure(1, weight=1)
         ttk.Label(details, textvariable=self.signal_text).grid(row=0, column=0, sticky="w")
         ttk.Label(details, textvariable=self.proximity_text).grid(row=0, column=1, sticky="e")
+
+        ttk.Label(result_frame, textvariable=self.history_text, style="History.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(2, 0)
+        )
         ttk.Label(result_frame, textvariable=self.trend_text).grid(
-            row=3, column=0, sticky="w", pady=(8, 0)
+            row=4, column=0, sticky="w", pady=(6, 0)
         )
         ttk.Label(result_frame, textvariable=self.last_seen_text).grid(
-            row=4, column=0, sticky="w", pady=(4, 0)
+            row=5, column=0, sticky="w", pady=(4, 0)
         )
 
+        # ── device list ───────────────────────────────────────────────────────
         devices_frame = ttk.LabelFrame(main, text="Nearby BLE devices", padding=8)
         devices_frame.grid(row=4, column=0, sticky="nsew")
         devices_frame.rowconfigure(0, weight=1)
@@ -169,6 +265,7 @@ class FindMyBudsApp:
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.devices_tree.configure(yscrollcommand=scrollbar.set)
 
+        # ── footer ────────────────────────────────────────────────────────────
         footer = ttk.Frame(main)
         footer.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         footer.columnconfigure(0, weight=1)
@@ -176,25 +273,35 @@ class FindMyBudsApp:
         self.activity = ttk.Progressbar(footer, mode="indeterminate", length=120)
         self.activity.grid(row=0, column=1, sticky="e")
 
+    # ── scan lifecycle ────────────────────────────────────────────────────────
+
     def start_scan(self) -> None:
         if self.scan_in_progress:
             return
+
+        # Cancel any pending auto-rescan timer so it doesn't double-fire.
+        if self._rescan_after_id is not None:
+            self.root.after_cancel(self._rescan_after_id)
+            self._rescan_after_id = None
 
         entered_name = self.target_name.get().strip()
         if entered_name != self.saved_target_name:
             self._set_target(entered_name, "")
 
+        timeout = self._get_scan_timeout()
         self.scan_in_progress = True
         self.scan_button.configure(state="disabled")
         self.activity.start(12)
-        self.status_text.set(f"Scanning for {SCAN_SECONDS:.0f} seconds…")
+        self.status_text.set(f"Scanning for {timeout:.0f} seconds…")
 
-        worker = threading.Thread(target=self._scan_worker, daemon=True)
+        worker = threading.Thread(
+            target=self._scan_worker, args=(timeout,), daemon=True
+        )
         worker.start()
 
-    def _scan_worker(self) -> None:
+    def _scan_worker(self, timeout: float) -> None:
         try:
-            readings = asyncio.run(discover_devices(timeout=SCAN_SECONDS))
+            readings = asyncio.run(discover_devices(timeout=timeout))
         except Exception as error:  # noqa: BLE001 - scanner errors cross thread boundary.
             self.result_queue.put(("error", error))
         else:
@@ -214,10 +321,22 @@ class FindMyBudsApp:
                     self.scan_in_progress = False
                     self.scan_button.configure(state="normal")
                     self.activity.stop()
+                    self._schedule_rescan()
         except queue.Empty:
             pass
         finally:
             self.root.after(150, self._process_results)
+
+    def _schedule_rescan(self) -> None:
+        """Queue the next automatic scan if auto-rescan is enabled."""
+        if not self.auto_rescan_var.get():
+            return
+        interval_ms = self._get_rescan_interval_ms()
+        label = self.rescan_interval_var.get()
+        self.status_text.set(f"Next scan in {label}…")
+        self._rescan_after_id = self.root.after(interval_ms, self.start_scan)
+
+    # ── display helpers ───────────────────────────────────────────────────────
 
     def _show_readings(self, readings: list[DeviceReading]) -> None:
         for item in self.devices_tree.get_children():
@@ -250,17 +369,10 @@ class FindMyBudsApp:
             )
             return
 
-        match = next(
-            (
-                reading
-                for reading in readings
-                if reading_matches(
-                    reading,
-                    target_name=self.saved_target_name,
-                    target_address=self.target_address,
-                )
-            ),
-            None,
+        match = find_target(
+            readings,
+            target_name=self.saved_target_name,
+            target_address=self.target_address,
         )
         if match is None:
             self.status_text.set(
@@ -274,6 +386,11 @@ class FindMyBudsApp:
         self.status_text.set(f"Found {match.name} among {len(readings)} devices.")
 
     def _show_match(self, reading: DeviceReading) -> None:
+        history = self._rssi_history.setdefault(
+            reading.address, deque(maxlen=RSSI_HISTORY_LEN)
+        )
+        history.append(reading.rssi)
+
         trend = describe_trend(self.previous_rssi, reading.rssi)
         self.previous_rssi = reading.rssi
         seen_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -285,6 +402,13 @@ class FindMyBudsApp:
         self.last_seen_text.set(f"Last seen: {seen_at}")
         self.signal_bar["value"] = signal_percent(reading.rssi)
 
+        if len(history) >= 2:
+            avg = round(sum(history) / len(history))
+            recent = ", ".join(str(v) for v in history)
+            self.history_text.set(f"Recent: {recent} dBm  (avg {avg} dBm)")
+        else:
+            self.history_text.set("")
+
         self.config["last_seen"] = seen_at
         self._save_config_safely()
 
@@ -293,7 +417,10 @@ class FindMyBudsApp:
         self.signal_text.set("Signal: —")
         self.proximity_text.set("Proximity: Not detected")
         self.trend_text.set("Try another room, move closer, or open the charging case.")
+        self.history_text.set("")
         self.signal_bar["value"] = 0
+
+    # ── target management ─────────────────────────────────────────────────────
 
     def use_selected_device(self) -> None:
         selection = self.devices_tree.selection()
@@ -312,6 +439,8 @@ class FindMyBudsApp:
         self.saved_target_name = name.strip()
         self.target_address = address.strip()
         self.previous_rssi = None
+        self._rssi_history.clear()
+        self.history_text.set("")
         self.config["target_name"] = self.saved_target_name
         self.config["target_address"] = self.target_address
         self.config.pop("last_seen", None)

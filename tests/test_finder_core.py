@@ -6,6 +6,7 @@ from finder_core import (
     describe_proximity,
     describe_trend,
     discover_devices,
+    find_target,
     reading_matches,
     signal_percent,
 )
@@ -63,6 +64,37 @@ class FinderCoreTests(unittest.TestCase):
 
         self.assertEqual([reading.name for reading in readings], ["Strong", "Weak"])
         self.assertEqual(readings[0].proximity, "Very close")
+
+
+    def test_find_target_returns_match_by_address(self):
+        readings = [
+            DeviceReading("Other", "11:22:33", -70),
+            DeviceReading("Buds", "AA:BB:CC", -55),
+        ]
+        result = find_target(readings, target_address="aa:bb:cc")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.name, "Buds")
+
+    def test_find_target_returns_match_by_name(self):
+        readings = [
+            DeviceReading("Other Device", "11:22:33", -70),
+            DeviceReading("Galaxy Buds Pro", "AA:BB:CC", -55),
+        ]
+        result = find_target(readings, target_name="galaxy buds")
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.address, "AA:BB:CC")
+
+    def test_find_target_returns_none_when_no_match(self):
+        readings = [
+            DeviceReading("Keyboard", "11:22:33", -70),
+            DeviceReading("Mouse", "44:55:66", -65),
+        ]
+        self.assertIsNone(find_target(readings, target_name="galaxy buds"))
+
+    def test_find_target_returns_none_for_empty_list(self):
+        self.assertIsNone(find_target([], target_name="Buds", target_address="AA:BB"))
 
 
 if __name__ == "__main__":

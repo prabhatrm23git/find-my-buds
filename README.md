@@ -46,9 +46,29 @@ with `python -m pip install -r requirements.txt` and run the app directly.
 5. Follow the signal value and warmer/colder message. A value around `-40 dBm`
    is strong, while a value around `-90 dBm` is weak.
 
-You can also type part of the Bluetooth device name before scanning. The saved
-target and last-seen time are stored in `.find_my_buds.json` in your home
-folder. No scan data is sent over the internet.
+You can also type part of the Bluetooth device name before scanning.
+
+### Auto-rescan
+
+Enable **Auto-rescan** in the toolbar to have the app scan automatically on a
+fixed interval (15 s / 30 s / 1 min / 2 min). Walk room-to-room while the app
+reports the signal level after each pass. Each completed scan resets the timer,
+and manually clicking **Scan nearby** cancels any pending auto-rescan.
+
+### Scan duration
+
+The **Scan duration** dropdown sets how long each BLE discovery window lasts
+(3 / 5 / 8 / 10 seconds). Use a shorter window when the earbuds are nearby and
+a longer one when the signal is weak or the earbuds are in another room.
+
+### RSSI history
+
+After two or more scans that find the target device, the Finder panel shows the
+last few raw RSSI readings and their average. A stable average is more reliable
+than any single snapshot.
+
+The saved target, scan settings, and last-seen time are stored in
+`.find_my_buds.json` in your home folder. No scan data is sent over the internet.
 
 ## Live Bluetooth test
 
