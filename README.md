@@ -5,6 +5,10 @@ to help find nearby earbuds. It listens continuously, remembers the selected
 earbuds, reports broad proximity, and tells you in real time whether you are
 getting warmer or colder as you walk around.
 
+## Demo
+
+https://github.com/user-attachments/assets/e9642eeb-351a-4134-aee9-33b9836be0b6
+
 ## What it can and cannot do
 
 Find My Buds uses RSSI (received signal strength), not GPS. RSSI changes with
