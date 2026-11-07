@@ -1,9 +1,9 @@
 # Find My Buds
 
 A small Windows desktop app that uses Bluetooth Low Energy (BLE) signal strength
-to help find nearby earbuds. It scans nearby devices, remembers the selected
-earbuds, reports broad proximity, and compares consecutive scans to tell you if
-you are getting warmer or colder.
+to help find nearby earbuds. It listens continuously, remembers the selected
+earbuds, reports broad proximity, and tells you in real time whether you are
+getting warmer or colder as you walk around.
 
 ## What it can and cannot do
 
@@ -40,35 +40,48 @@ with `python -m pip install -r requirements.txt` and run the app directly.
 ## Using the app
 
 1. Open the earbud case or put the earbuds in pairing mode.
-2. Select **Scan nearby**.
-3. Select the earbuds in the device table and choose **Use selected device**.
-4. Move to another position and scan again.
+2. Select **Start scanning**. The app keeps listening until you select
+   **Stop scanning**; there is no scan duration or interval to configure.
+3. Select the earbuds in the device table and choose **Use selected device**
+   (or double-click the row).
+4. Walk around slowly. The Finder panel updates twice a second.
 5. Follow the signal value and warmer/colder message. A value around `-40 dBm`
    is strong, while a value around `-90 dBm` is weak.
 
-You can also type part of the Bluetooth device name before scanning.
+You can also type part of the Bluetooth device name and press Enter, which
+applies the name and starts scanning.
 
-### Auto-rescan
+### How the earbuds are matched
 
-Enable **Auto-rescan** in the toolbar to have the app scan automatically on a
-fixed interval (15 s / 30 s / 1 min / 2 min). Walk room-to-room while the app
-reports the signal level after each pass. Each completed scan resets the timer,
-and manually clicking **Scan nearby** cancels any pending auto-rescan.
+Once you choose **Use selected device**, the app matches by saved address
+first. Many earbuds change their Bluetooth address over time, so it falls back
+to the exact saved name. Partial names are only used when you typed a name and
+no address is saved, which avoids latching onto a neighbour's similarly named
+device. If several devices match equally, the strongest signal is used.
 
-### Scan duration
+### Continuous scanning and smoothing
 
-The **Scan duration** dropdown sets how long each BLE discovery window lasts
-(3 / 5 / 8 / 10 seconds). Use a shorter window when the earbuds are nearby and
-a longer one when the signal is weak or the earbuds are in another room.
+The app receives every Bluetooth advertisement as it arrives. Each device's
+signal is the **median of its readings over the last 5 seconds**, so a single
+noisy reading does not move the display. The Finder panel shows how many
+readings the value is based on.
 
-### RSSI history
+The warmer/colder message compares the current smoothed signal with the one
+from up to 6 seconds earlier (once at least 3 seconds of history exist), and
+ignores changes smaller than 5 dBm. A device that has not been heard for 12
+seconds is dropped from the list; if it is your target, the Finder panel shows
+"Not detected" and the trend restarts when it returns.
 
-After two or more scans that find the target device, the Finder panel shows the
-last few raw RSSI readings and their average. A stable average is more reliable
-than any single snapshot.
+The device list updates in place so your selection is kept, and is re-sorted by
+signal every few seconds.
 
-The saved target, scan settings, and last-seen time are stored in
-`.find_my_buds.json` in your home folder. No scan data is sent over the internet.
+If scanning fails (for example Bluetooth is off), the error is shown in the
+status bar and scanning stops until you start it again.
+
+The saved target (including its Bluetooth address) and last-seen time are
+stored in plain text in `.find_my_buds.json` in your home folder. No scan data
+is sent over the internet. If that file is damaged it is kept as
+`.find_my_buds.json.corrupt` and the app starts with defaults.
 
 ## Live Bluetooth test
 
@@ -79,8 +92,6 @@ reported that the signal was getting warmer.
 ![Find My Buds detecting nearby earbuds](docs/find-my-buds-test.png)
 
 ## Run tests
-
-
 
 ```powershell
 python -m unittest discover -s tests -v
